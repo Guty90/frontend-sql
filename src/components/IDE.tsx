@@ -63,7 +63,7 @@ const IDE = () => {
   const connectToDatabase = () => {
     setDbConnection({
       connected: true,
-      name: 'PostgreSQL - Production'
+      name: 'Production'
     });
   };
 
@@ -141,7 +141,7 @@ const SideBar = ({ files, addNewFile, activateFile }: { files: File[]; addNewFil
   return (
     <div className="w-56 bg-gray-800 text-gray-300 border-r border-gray-700">
       <div className="p-2 font-medium flex justify-between items-center">
-        <span>EXPLORADOR</span>
+        <span>GutYisuSQL</span>
         <button 
           onClick={addNewFile}
           className="p-1 rounded hover:bg-gray-700"
@@ -158,7 +158,7 @@ const SideBar = ({ files, addNewFile, activateFile }: { files: File[]; addNewFil
           <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mr-2">
             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
           </svg>
-          <span>MI PROYECTO</span>
+          <span>LA2-U2</span>
         </div>
       </div>
       <div className="pl-6">
@@ -300,12 +300,12 @@ const EditorPanel = ({ fileContent, fileName, setCursorPosition, connectToDataba
       <div className="flex justify-between items-center p-2 bg-gray-800 text-gray-300 border-t border-gray-700">
         <div className="flex space-x-2">
           <button 
-            className="px-4 py-1 rounded bg-gray-700 hover:bg-gray-600 text-white focus:outline-none focus:ring-2 focus:ring-gray-500"
+            className="cursor-pointer px-4 py-1 rounded bg-gray-700 hover:bg-gray-600 text-white focus:outline-none focus:ring-2 focus:ring-gray-500"
           >
             Crear código SQL
           </button>
           <button 
-            className="px-4 py-1 rounded bg-gray-700 hover:bg-gray-600 text-white focus:outline-none focus:ring-2 focus:ring-gray-500"
+            className="cursor-pointer px-4 py-1 rounded bg-purple-700 hover:bg-purple-600 text-white focus:outline-none focus:ring-2 focus:ring-gray-500"
             onClick={connectToDatabase}
           >
             Conectar a BD
