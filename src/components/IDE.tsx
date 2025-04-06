@@ -111,13 +111,6 @@ const IDE = () => {
     
   };
 
-  const disconnectFromDatabase = () => {
-    setDbConnection({
-      connected: false,
-      name: 'Sin conexión'
-    });
-  };
-
   const createSQLCode = async () => {
     const activeFile = files.find(f => f.active);
     if (!activeFile) return;
@@ -182,7 +175,6 @@ const IDE = () => {
             cursorPosition={cursorPosition}
             indentSize={indentSize}
             dbConnection={dbConnection}
-            disconnectFromDatabase={disconnectFromDatabase}
           />
         </div>
       </div>
@@ -452,14 +444,12 @@ interface StatusBarProps {
   cursorPosition: { lineNumber: number; column: number };
   indentSize: number;
   dbConnection: { connected: boolean; name: string };
-  disconnectFromDatabase: () => void;
 }
 
 const StatusBar = ({ 
   cursorPosition, 
   indentSize, 
   dbConnection,
-  disconnectFromDatabase
 }: StatusBarProps) => {
   return (
     <div className="flex justify-between items-center px-4 py-1 text-sm bg-gray-700 text-white">
@@ -468,14 +458,7 @@ const StatusBar = ({
         <div className="flex items-center">
           <div className={`w-3 h-3 rounded-full mr-2 ${dbConnection.connected ? 'bg-green-500' : 'bg-red-500'}`}></div>
           <span>{dbConnection.name}</span>
-          {dbConnection.connected && (
-            <button 
-              onClick={disconnectFromDatabase}
-              className="ml-2 text-xs px-2 py-1 rounded bg-red-600 hover:bg-red-700"
-            >
-              Desconectar
-            </button>
-          )}
+          
         </div>
       </div>
       <div className="flex items-center space-x-4">
