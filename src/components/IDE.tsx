@@ -1,6 +1,14 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import * as monaco from 'monaco-editor';
 import axios from 'axios';
+
+// Definición de la interfaz File
+interface File {
+  id: number;
+  name: string;
+  content: string;
+  active: boolean;
+}
 
 // Componente principal del IDE
 const IDE = () => {
@@ -11,8 +19,6 @@ const IDE = () => {
   const [salida, setSalida] = useState<string | null>("No hay salida");
   const [sql, setSql] = useState<string | null>("No hay SQL");
   const [isError, setIsError] = useState(false);
-  
-
 
   const addNewFile = () => {
     const newId = files.length > 0 ? Math.max(...files.map(f => f.id)) + 1 : 1;
@@ -28,21 +34,20 @@ const IDE = () => {
       { 
         id: newId, 
         name: newFileName, 
-        content: '-- Escribe su código GY aquí\n', 
+        content: '', 
         active: true 
       }
     ]);
   };
 
-  interface File {
-    id: number;
-    name: string;
-    content: string;
-    active: boolean;
-  }
+  const updateFileContent = (id: number, newContent: string) => {
+    setFiles(files.map(file => 
+      file.id === id ? { ...file, content: newContent } : file
+    ));
+  };
 
   const activateFile = (id: number): void => {
-    setFiles(files.map((file: File) => ({
+    setFiles(files.map(file => ({
       ...file,
       active: file.id === id
     })));
@@ -51,27 +56,61 @@ const IDE = () => {
   const closeFile = (id: number, e: React.MouseEvent<HTMLButtonElement>): void => {
     e.stopPropagation();
     
-    const fileToRemove = files.find((f: File) => f.id === id);
+    const fileToRemove = files.find(f => f.id === id);
     if (fileToRemove && fileToRemove.active && files.length > 1) {
-      const index = files.findIndex((f: File) => f.id === id);
+      const index = files.findIndex(f => f.id === id);
       const nextActiveIndex = index === 0 ? 1 : index - 1;
-      const updatedFiles = files.filter((f: File) => f.id !== id);
+      const updatedFiles = files.filter(f => f.id !== id);
       updatedFiles[nextActiveIndex].active = true;
       setFiles(updatedFiles);
     } else {
-      setFiles(files.filter((f: File) => f.id !== id));
+      setFiles(files.filter(f => f.id !== id));
     }
   };
 
-  // Conectar a base de datos (simulación)
-  const connectToDatabase = () => {
-    setDbConnection({
-      connected: true,
-      name: 'Production'
-    });
+  const connectToDatabase = async () => {
+    try{
+      const res = await axios.post('http://localhost:8080/db/create', {
+        sql:sql
+      })
+      setSalida(res.data.body);
+      setIsError(false);
+      setDbConnection({
+        connected: true,
+        name: res.data.dbName
+      });
+    }catch(ex){
+      console.error('Error al conectar a la base de datos:', ex);
+      setSalida((ex as Error).message);
+      setIsError(true);
+      setDbConnection({
+        connected: false,
+        name: 'Sin conexión'
+      });
+    }
+
+    
   };
 
-  // Desconectar de base de datos (simulación)
+  const consultToDatabase = async () => {
+    try{
+      console.log("SQL mandado: " + sql)
+      const res = await axios.post('http://localhost:8080/db/getTables', {
+        sql:sql
+      })
+      const data = res.data
+      const dataAsString = JSON.stringify(data, null, 2) // El 2 es para indentación
+      setSalida(dataAsString)
+      setIsError(false);
+    }catch(ex){
+      console.error('Error al consultar la base de datos:', ex);
+      setSalida((ex as Error).message);
+      setIsError(true);
+    }
+
+    
+  };
+
   const disconnectFromDatabase = () => {
     setDbConnection({
       connected: false,
@@ -79,54 +118,60 @@ const IDE = () => {
     });
   };
 
-  // Crear código SQL 
-  const createSQLCode =async () => {
-    try{
+  const createSQLCode = async () => {
+    const activeFile = files.find(f => f.active);
+    if (!activeFile) return;
+
+    try {
       const res = await axios.post('http://localhost:8080/grammar/getGrammar', {
-        instruction:activeFile?.content
-      })
-      console.log('Data enviada:', activeFile?.content);
-      if(res.data.errors.length > 0){
+        instruction: activeFile.content
+      });
+      
+      console.log('Data enviada:', activeFile.content);
+      
+      if (res.data.errors && res.data.errors.length > 0) {
         console.error('Errores en el código SQL:', res.data.errors);
         setSalida(res.data.errors);
         setIsError(true);
-      }else{
-        setSalida("Código SQL generado");
+        setSql(null);
+      } else {
+        setSalida("Código SQL generado correctamente");
         setSql(res.data.sql);
         setIsError(false);
       }
       console.log('Código SQL generado:', res.data);
-    }
-    catch(ex){
+    } catch (ex) {
       console.error('Error al crear el código SQL:', ex);
+      setSalida((ex as Error).message);
+      setIsError(true);
     }
-  }
-
+  };
 
   const activeFile = files.find(f => f.active);
 
   return (
     <div className="flex flex-col h-screen bg-gray-900 font-mono">
-      <div className="flex flex-1">
+      <div className="flex flex-1 overflow-hidden">
         <SideBar 
           files={files} 
           addNewFile={addNewFile} 
           activateFile={activateFile}
         />
-        <div className="flex flex-col flex-1">
+        <div className="flex flex-col flex-1 overflow-hidden">
           <EditorTabs 
             files={files} 
             activateFile={activateFile} 
             closeFile={closeFile}
           />
-          <div className="flex flex-1">
+          <div className="flex flex-1 overflow-hidden">
             {activeFile ? (
               <EditorPanel 
-                fileContent={activeFile.content}
-                fileName={activeFile.name}
+                file={activeFile}
                 setCursorPosition={setCursorPosition}
                 connectToDatabase={connectToDatabase}
                 createSQLCode={createSQLCode}
+                updateFileContent={updateFileContent}
+                consultToDatabase={consultToDatabase}
               />
             ) : (
               <WelcomeScreen addNewFile={addNewFile} />
@@ -165,7 +210,7 @@ const WelcomeScreen = ({ addNewFile }: { addNewFile: () => void }) => {
   );
 };
 
-// Componente para la barra lateral (explorador en VSCode)
+// Componente para la barra lateral
 const SideBar = ({ files, addNewFile, activateFile }: { files: File[]; addNewFile: () => void; activateFile: (id: number) => void }) => {
   return (
     <div className="w-56 bg-gray-800 text-gray-300 border-r border-gray-700">
@@ -215,13 +260,6 @@ const SideBar = ({ files, addNewFile, activateFile }: { files: File[]; addNewFil
 };
 
 // Componente para las pestañas del editor
-interface File {
-  id: number;
-  name: string;
-  content: string;
-  active: boolean;
-}
-
 const EditorTabs = ({ files, activateFile, closeFile }: { files: File[]; activateFile: (id: number) => void; closeFile: (id: number, e: React.MouseEvent<HTMLButtonElement>) => void }) => {
   if (files.length === 0) return null;
   
@@ -252,78 +290,99 @@ const EditorTabs = ({ files, activateFile, closeFile }: { files: File[]; activat
 };
 
 // Componente para el editor Monaco
-const MonacoEditor = ({ content, fileName, setCursorPosition }: { content: string; fileName: string; setCursorPosition: (position: { lineNumber: number; column: number }) => void }) => {
-  const editorRef = useRef(null);
-  const monacoRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
+interface MonacoEditorProps {
+  initialContent: string;
+  fileName: string;
+  setCursorPosition: (position: { lineNumber: number; column: number }) => void;
+  onChange: (value: string) => void;
+}
+
+const MonacoEditor = ({ initialContent, fileName, setCursorPosition, onChange }: MonacoEditorProps) => {
+  const editorRef = useRef<HTMLDivElement>(null);
+  const monacoEditorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
+  const [content, setContent] = useState(initialContent);
 
   useEffect(() => {
-    if (editorRef.current) {
-      if (monacoRef.current) {
-        monacoRef.current.dispose();
-      }
-
-      // Detectar el lenguaje basado en la extensión del archivo
+    if (editorRef.current && !monacoEditorRef.current) {
       const fileExtension = fileName.split('.').pop();
       let language = 'plaintext';
       
       if (fileExtension === 'gy') {
         language = 'sql';
-      } else if (fileExtension === 'ts' || fileExtension === 'tsx') {
-        language = 'typescript';
-      } else if (fileExtension === 'js' || fileExtension === 'jsx') {
-        language = 'javascript';
       }
 
-      monacoRef.current = monaco.editor.create(editorRef.current, {
+      monacoEditorRef.current = monaco.editor.create(editorRef.current, {
         value: content,
         language: language,
         theme: 'vs-dark',
         automaticLayout: true,
-        minimap: {
-          enabled: true
-        },
-        scrollBeyondLastLine: false,
+        minimap: { enabled: true },
         fontSize: 14,
         fontFamily: "'Fira Code'",
-        lineNumbers: 'on',
-        roundedSelection: false,
-        scrollbar: {
-          verticalScrollbarSize: 10,
-          horizontalScrollbarSize: 10,
-          useShadows: false
-        }
       });
 
-      // Actualizar la posición del cursor cuando cambie
-      monacoRef.current.onDidChangeCursorPosition(e => {
+      // Configura el listener para cambios
+      monacoEditorRef.current.onDidChangeModelContent(() => {
+        const newValue = monacoEditorRef.current?.getValue() || '';
+        setContent(newValue);
+        onChange(newValue);
+      });
+
+      monacoEditorRef.current.onDidChangeCursorPosition(e => {
         setCursorPosition({
           lineNumber: e.position.lineNumber,
           column: e.position.column
         });
       });
-
-      return () => {
-        if (monacoRef.current) {
-          monacoRef.current.dispose();
-        }
-      };
     }
-  }, [content, fileName, setCursorPosition]);
 
-  return (
-    <div ref={editorRef} className="w-full h-full" />
-  );
+    return () => {
+      monacoEditorRef.current?.dispose();
+      monacoEditorRef.current = null;
+    };
+  }, [fileName]); // Solo dependemos de fileName
+
+  // Actualización externa del contenido
+  useEffect(() => {
+    if (monacoEditorRef.current && initialContent !== content) {
+      monacoEditorRef.current.setValue(initialContent);
+      setContent(initialContent);
+    }
+  }, [initialContent]);
+
+  return <div ref={editorRef} className="w-full h-full" />;
 };
 
 // Componente para el panel del editor
-const EditorPanel = ({ fileContent, fileName, setCursorPosition, connectToDatabase, createSQLCode }: { fileContent: string; fileName: string; setCursorPosition: (position: { lineNumber: number; column: number }) => void; connectToDatabase: () => void; createSQLCode: () => void; }) => {
+interface EditorPanelProps {
+  file: File;
+  setCursorPosition: (position: { lineNumber: number; column: number }) => void;
+  connectToDatabase: () => void;
+  createSQLCode: () => void;
+  updateFileContent: (id: number, content: string) => void;
+  consultToDatabase: () => void;
+}
+
+const EditorPanel = ({ 
+  file, 
+  setCursorPosition, 
+  connectToDatabase, 
+  createSQLCode,
+  updateFileContent,
+  consultToDatabase
+}: EditorPanelProps) => {
+  const handleEditorChange = useCallback((value: string) => {
+    updateFileContent(file.id, value);
+  }, [file.id, updateFileContent]);
+
   return (
     <div className="flex-1 flex flex-col">
       <div className="flex-1 bg-gray-800">
         <MonacoEditor 
-          content={fileContent} 
-          fileName={fileName}
+          initialContent={file.content}
+          fileName={file.name}
           setCursorPosition={setCursorPosition}
+          onChange={handleEditorChange}
         />
       </div>
       <div className="flex justify-between items-center p-2 bg-gray-800 text-gray-300 border-t border-gray-700">
@@ -340,6 +399,12 @@ const EditorPanel = ({ fileContent, fileName, setCursorPosition, connectToDataba
           >
             Conectar a BD
           </button>
+          <button 
+            className="cursor-pointer px-4 py-1 rounded bg-blue-700 hover:bg-purple-600 text-white focus:outline-none focus:ring-2 focus:ring-gray-500"
+            onClick={consultToDatabase}
+          >
+            Consultar la BD
+          </button>
         </div>
       </div>
     </div>
@@ -347,23 +412,35 @@ const EditorPanel = ({ fileContent, fileName, setCursorPosition, connectToDataba
 };
 
 // Componente para el panel de resultados
-const ResultsPanel = ({ salida, sql, isError }: { salida: string | null; sql: string | null; isError: boolean }) => {
+interface ResultsPanelProps {
+  salida: string | null;
+  sql: string | null;
+  isError: boolean;
+}
+
+const ResultsPanel = ({ salida, sql, isError }: ResultsPanelProps) => {
   return (
-    <div className="w-1/3 flex flex-col border-l border-gray-700">
-      <div className="flex-1 bg-gray-800 overflow-hidden flex flex-col">
+    <div className="w-1/3 flex flex-col h-full border-l border-gray-700 overflow-hidden">
+      {/* Sección de Código SQL generado */}
+      <div className="flex-[3] bg-gray-800 flex flex-col overflow-hidden">
         <div className="p-2 font-medium text-gray-300 bg-gray-800 border-b border-gray-700">
           Código SQL generado
         </div>
-        <div className={`p-4 flex-1 overflow-auto font-mono text-sm bg-gray-900 text-gray-300 ${sql ? 'text-gray-300' : 'text-gray-500'}`}>
-          <span className="text-gray-500">{sql}</span>
+        <div className="p-4 flex-1 overflow-auto font-mono text-sm bg-gray-900 text-gray-300">
+          <pre className="whitespace-pre-wrap break-words">
+            {sql || "No hay código SQL generado"}
+          </pre>
         </div>
       </div>
-      <div className="h-1/4 bg-gray-800 flex flex-col border-t border-gray-700">
+      {/* Sección de Salida */}
+      <div className="flex-[2] bg-gray-800 flex flex-col border-t border-gray-700 overflow-hidden">
         <div className="p-2 font-medium text-gray-300 bg-gray-800 border-b border-gray-700">
           Salida
         </div>
-        <div className={`p-2 overflow-auto flex-1 bg-gray-900 text-gray-300 ${isError ? 'text-red-500' : 'text-green-700'}`}>
-          <div>{salida}</div>
+        <div className={`p-2 overflow-auto flex-1 bg-gray-900 font-mono text-sm ${isError ? 'text-red-500' : 'text-green-500'}`}>
+          <pre className="whitespace-pre-wrap break-words">
+            {salida || "No hay salida disponible"}
+          </pre>
         </div>
       </div>
     </div>
@@ -371,7 +448,19 @@ const ResultsPanel = ({ salida, sql, isError }: { salida: string | null; sql: st
 };
 
 // Componente para la barra de estado
-const StatusBar = ({ cursorPosition, indentSize, dbConnection }: { cursorPosition: { lineNumber: number; column: number }; indentSize: number; dbConnection: { connected: boolean; name: string }; disconnectFromDatabase: () => void }) => {
+interface StatusBarProps {
+  cursorPosition: { lineNumber: number; column: number };
+  indentSize: number;
+  dbConnection: { connected: boolean; name: string };
+  disconnectFromDatabase: () => void;
+}
+
+const StatusBar = ({ 
+  cursorPosition, 
+  indentSize, 
+  dbConnection,
+  disconnectFromDatabase
+}: StatusBarProps) => {
   return (
     <div className="flex justify-between items-center px-4 py-1 text-sm bg-gray-700 text-white">
       <div className="flex items-center space-x-4">
@@ -379,6 +468,14 @@ const StatusBar = ({ cursorPosition, indentSize, dbConnection }: { cursorPositio
         <div className="flex items-center">
           <div className={`w-3 h-3 rounded-full mr-2 ${dbConnection.connected ? 'bg-green-500' : 'bg-red-500'}`}></div>
           <span>{dbConnection.name}</span>
+          {dbConnection.connected && (
+            <button 
+              onClick={disconnectFromDatabase}
+              className="ml-2 text-xs px-2 py-1 rounded bg-red-600 hover:bg-red-700"
+            >
+              Desconectar
+            </button>
+          )}
         </div>
       </div>
       <div className="flex items-center space-x-4">
