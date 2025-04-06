@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import * as monaco from 'monaco-editor';
+import axios from 'axios';
 
 // Componente principal del IDE
 const IDE = () => {
@@ -7,6 +8,11 @@ const IDE = () => {
   const [cursorPosition, setCursorPosition] = useState({ lineNumber: 1, column: 1 });
   const [indentSize, setIndentSize] = useState(2);
   const [dbConnection, setDbConnection] = useState({ connected: false, name: 'Sin conexión' });
+  const [salida, setSalida] = useState<string | null>("No hay salida");
+  const [sql, setSql] = useState<string | null>("No hay SQL");
+  const [isError, setIsError] = useState(false);
+  
+
 
   const addNewFile = () => {
     const newId = files.length > 0 ? Math.max(...files.map(f => f.id)) + 1 : 1;
@@ -42,9 +48,7 @@ const IDE = () => {
     })));
   };
 
-  interface CloseFileEvent extends React.MouseEvent<HTMLButtonElement> {}
-
-  const closeFile = (id: number, e: CloseFileEvent): void => {
+  const closeFile = (id: number, e: React.MouseEvent<HTMLButtonElement>): void => {
     e.stopPropagation();
     
     const fileToRemove = files.find((f: File) => f.id === id);
@@ -75,6 +79,30 @@ const IDE = () => {
     });
   };
 
+  // Crear código SQL 
+  const createSQLCode =async () => {
+    try{
+      const res = await axios.post('http://localhost:8080/grammar/getGrammar', {
+        instruction:activeFile?.content
+      })
+      console.log('Data enviada:', activeFile?.content);
+      if(res.data.errors.length > 0){
+        console.error('Errores en el código SQL:', res.data.errors);
+        setSalida(res.data.errors);
+        setIsError(true);
+      }else{
+        setSalida("Código SQL generado");
+        setSql(res.data.sql);
+        setIsError(false);
+      }
+      console.log('Código SQL generado:', res.data);
+    }
+    catch(ex){
+      console.error('Error al crear el código SQL:', ex);
+    }
+  }
+
+
   const activeFile = files.find(f => f.active);
 
   return (
@@ -98,11 +126,12 @@ const IDE = () => {
                 fileName={activeFile.name}
                 setCursorPosition={setCursorPosition}
                 connectToDatabase={connectToDatabase}
+                createSQLCode={createSQLCode}
               />
             ) : (
               <WelcomeScreen addNewFile={addNewFile} />
             )}
-            <ResultsPanel />
+            <ResultsPanel salida={salida} sql={sql} isError={isError} />
           </div>
           <StatusBar 
             cursorPosition={cursorPosition}
@@ -287,7 +316,7 @@ const MonacoEditor = ({ content, fileName, setCursorPosition }: { content: strin
 };
 
 // Componente para el panel del editor
-const EditorPanel = ({ fileContent, fileName, setCursorPosition, connectToDatabase }: { fileContent: string; fileName: string; setCursorPosition: (position: { lineNumber: number; column: number }) => void; connectToDatabase: () => void }) => {
+const EditorPanel = ({ fileContent, fileName, setCursorPosition, connectToDatabase, createSQLCode }: { fileContent: string; fileName: string; setCursorPosition: (position: { lineNumber: number; column: number }) => void; connectToDatabase: () => void; createSQLCode: () => void; }) => {
   return (
     <div className="flex-1 flex flex-col">
       <div className="flex-1 bg-gray-800">
@@ -300,6 +329,7 @@ const EditorPanel = ({ fileContent, fileName, setCursorPosition, connectToDataba
       <div className="flex justify-between items-center p-2 bg-gray-800 text-gray-300 border-t border-gray-700">
         <div className="flex space-x-2">
           <button 
+            onClick={createSQLCode}
             className="cursor-pointer px-4 py-1 rounded bg-gray-700 hover:bg-gray-600 text-white focus:outline-none focus:ring-2 focus:ring-gray-500"
           >
             Crear código SQL
@@ -317,23 +347,23 @@ const EditorPanel = ({ fileContent, fileName, setCursorPosition, connectToDataba
 };
 
 // Componente para el panel de resultados
-const ResultsPanel = () => {
+const ResultsPanel = ({ salida, sql, isError }: { salida: string | null; sql: string | null; isError: boolean }) => {
   return (
     <div className="w-1/3 flex flex-col border-l border-gray-700">
       <div className="flex-1 bg-gray-800 overflow-hidden flex flex-col">
         <div className="p-2 font-medium text-gray-300 bg-gray-800 border-b border-gray-700">
           Código SQL generado
         </div>
-        <div className="p-4 flex-1 overflow-auto font-mono text-sm bg-gray-900 text-gray-300">
-          <span className="text-gray-500">El código SQL aparecerá aquí...</span>
+        <div className={`p-4 flex-1 overflow-auto font-mono text-sm bg-gray-900 text-gray-300 ${sql ? 'text-gray-300' : 'text-gray-500'}`}>
+          <span className="text-gray-500">{sql}</span>
         </div>
       </div>
       <div className="h-1/4 bg-gray-800 flex flex-col border-t border-gray-700">
         <div className="p-2 font-medium text-gray-300 bg-gray-800 border-b border-gray-700">
           Salida
         </div>
-        <div className="p-2 overflow-auto flex-1 bg-gray-900 text-gray-300">
-          <div className="text-gray-500">No hay salida</div>
+        <div className={`p-2 overflow-auto flex-1 bg-gray-900 text-gray-300 ${isError ? 'text-red-500' : 'text-green-700'}`}>
+          <div>{salida}</div>
         </div>
       </div>
     </div>
