@@ -389,7 +389,7 @@ const EditorPanel = ({
             className="cursor-pointer px-4 py-1 rounded bg-purple-700 hover:bg-purple-600 text-white focus:outline-none focus:ring-2 focus:ring-gray-500"
             onClick={connectToDatabase}
           >
-            Conectar a BD
+            Crear BD y tablas
           </button>
           <button 
             className="cursor-pointer px-4 py-1 rounded bg-blue-700 hover:bg-purple-600 text-white focus:outline-none focus:ring-2 focus:ring-gray-500"
