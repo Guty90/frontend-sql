@@ -304,6 +304,8 @@ const IDE = () => {
   const [copied, setCopied] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [generatingPython, setGeneratingPython] = useState(false);
+  const [createdDatabase, setCreatedDatabase] = useState<string | null>(null);
+  const [creatingDatabase, setCreatingDatabase] = useState(false);
 
   // Layout state
   const [rightPanelWidth, setRightPanelWidth] = useState(50); // percentage
@@ -311,6 +313,37 @@ const IDE = () => {
   const [sidebarWidth, setSidebarWidth] = useState(280); // pixels
 
   const containerRef = useRef<HTMLDivElement>(null);
+
+  const extractDatabaseCommands = (sql: string): string | null => {
+    if (!sql) return null;
+
+    const lines = sql.split("\n");
+    const dbCommands = lines.filter((line) => {
+      const trimmed = line.trim().toUpperCase();
+      return (
+        trimmed.startsWith("CREATE DATABASE") || trimmed.startsWith("USE ")
+      );
+    });
+
+    return dbCommands.length > 0 ? dbCommands.join("\n") : null;
+  };
+
+  // 3. Función para extraer el nombre de la BD
+  const extractDatabaseName = (sql: string): string | null => {
+    if (!sql) return null;
+
+    const lines = sql.split("\n");
+    for (const line of lines) {
+      const trimmed = line.trim().toUpperCase();
+      if (trimmed.startsWith("CREATE DATABASE")) {
+        const match = line.match(/CREATE DATABASE\s+([^;]+)/i);
+        if (match) {
+          return match[1].trim();
+        }
+      }
+    }
+    return null;
+  };
 
   // Resize handlers
   const handleRightPanelResize = useCallback(
@@ -482,6 +515,31 @@ fin`,
     return tables;
   };
 
+  const createDatabase = async () => {
+    const dbCommands = extractDatabaseCommands(sql || "");
+    if (!dbCommands) return;
+
+    setCreatingDatabase(true);
+    setSalida("Creando base de datos...");
+
+    try {
+      const res = await axios.post("http://localhost:8080/db/create", {
+        sql: dbCommands,
+      });
+
+      const dbName = extractDatabaseName(sql || "");
+      setCreatedDatabase(dbName);
+      setSalida(`Base de datos '${dbName}' creada correctamente`);
+      setIsError(false);
+    } catch (ex) {
+      console.error("Error al crear la base de datos:", ex);
+      setSalida(`Error al crear la base de datos: ${(ex as Error).message}`);
+      setIsError(true);
+    } finally {
+      setCreatingDatabase(false);
+    }
+  };
+
   const createSQLCode = async () => {
     const activeFile = files.find((f) => f.active);
     if (!activeFile) return;
@@ -544,6 +602,9 @@ fin`,
     // Simular delay de generación
     await new Promise((resolve) => setTimeout(resolve, 1500));
 
+    // Usar la BD creada o una por defecto
+    const databaseName = createdDatabase || "test_db";
+
     let pythonCode = `import psycopg2
 import pandas as pd
 from sqlalchemy import create_engine
@@ -551,9 +612,9 @@ from sqlalchemy import create_engine
 # 🔧 Configuración de conexión a la base de datos
 DATABASE_CONFIG = {
     'host': 'localhost',
-    'database': 'test_db',  # Cambia por tu base de datos
-    'user': 'postgres',     # Cambia por tu usuario
-    'password': 'password', # Cambia por tu contraseña
+    'database': '${databaseName}', 
+    'user': 'postgres',     
+    'password': 'password', 
     'port': '5432'
 }
 
@@ -574,18 +635,21 @@ def create_engine_connection():
 `;
 
     selectedTables.forEach((table) => {
-        // Filtrar columnas (excluir ID autogenerados)
-        const insertColumns = table.columns.filter(col => 
-            !col.toLowerCase().includes('id') || 
-            (!col.toLowerCase().endsWith('_id') && col.toLowerCase() !== 'id')
-        );
-        
-        const allColumns = table.columns;
-        const placeholders = insertColumns.map(() => '%s').join(', ');
-        const updateColumns = insertColumns.filter(col => col !== 'id');
-        const updatePlaceholders = updateColumns.map(col => `${col} = %s`).join(', ');
+      // Filtrar columnas (excluir ID autogenerados)
+      const insertColumns = table.columns.filter(
+        (col) =>
+          !col.toLowerCase().includes("id") ||
+          (!col.toLowerCase().endsWith("_id") && col.toLowerCase() !== "id")
+      );
 
-        pythonCode += `
+      const allColumns = table.columns;
+      const placeholders = insertColumns.map(() => "%s").join(", ");
+      const updateColumns = insertColumns.filter((col) => col !== "id");
+      const updatePlaceholders = updateColumns
+        .map((col) => `${col} = %s`)
+        .join(", ");
+
+      pythonCode += `
 # 📊 Funciones para la tabla ${table.name}
 def get_all_${table.name}():
     """Obtiene todos los registros de ${table.name}"""
@@ -606,7 +670,9 @@ def get_${table.name}_by_id(record_id):
         try:
             cursor = connection.cursor()
             # Buscar cualquier columna que termine en 'id'
-            id_column = next((col for col in ${JSON.stringify(allColumns)} if 'id' in col.lower()), '${allColumns[0]}')
+            id_column = next((col for col in ${JSON.stringify(
+              allColumns
+            )} if 'id' in col.lower()), '${allColumns[0]}')
             query = f"SELECT * FROM ${table.name} WHERE {id_column} = %s"
             cursor.execute(query, (record_id,))
             result = cursor.fetchone()
@@ -621,15 +687,15 @@ def get_${table.name}_by_id(record_id):
             cursor.close()
             connection.close()
 
-def insert_${table.name}(${insertColumns.join(', ')}):
+def insert_${table.name}(${insertColumns.join(", ")}):
     """➕ Inserta un nuevo registro en ${table.name}"""
     connection = create_connection()
     if connection:
         try:
             cursor = connection.cursor()
-            query = """INSERT INTO ${table.name} (${insertColumns.join(', ')})
+            query = """INSERT INTO ${table.name} (${insertColumns.join(", ")})
                        VALUES (${placeholders}) RETURNING *"""
-            cursor.execute(query, (${insertColumns.join(', ')}))
+            cursor.execute(query, (${insertColumns.join(", ")}))
             result = cursor.fetchone()
             connection.commit()
             
@@ -647,19 +713,21 @@ def insert_${table.name}(${insertColumns.join(', ')}):
             cursor.close()
             connection.close()
 
-def update_${table.name}(record_id, ${updateColumns.join(', ')}):
+def update_${table.name}(record_id, ${updateColumns.join(", ")}):
     """🔄 Actualiza un registro en ${table.name}"""
     connection = create_connection()
     if connection:
         try:
             cursor = connection.cursor()
             # Buscar la columna ID
-            id_column = next((col for col in ${JSON.stringify(allColumns)} if 'id' in col.lower()), '${allColumns[0]}')
+            id_column = next((col for col in ${JSON.stringify(
+              allColumns
+            )} if 'id' in col.lower()), '${allColumns[0]}')
             query = f"""UPDATE ${table.name} 
                        SET ${updatePlaceholders}
                        WHERE {id_column} = %s 
                        RETURNING *"""
-            cursor.execute(query, (${updateColumns.join(', ')}, record_id))
+            cursor.execute(query, (${updateColumns.join(", ")}, record_id))
             result = cursor.fetchone()
             connection.commit()
             
@@ -669,7 +737,9 @@ def update_${table.name}(record_id, ${updateColumns.join(', ')}):
                 print(f"✅ Registro actualizado en ${table.name}: {record}")
                 return record
             else:
-                print(f"⚠️ No se encontró registro con ID {record_id} en ${table.name}")
+                print(f"⚠️ No se encontró registro con ID {record_id} en ${
+                  table.name
+                }")
                 return None
         except Exception as e:
             print(f"❌ Error actualizando ${table.name}: {e}")
@@ -685,17 +755,25 @@ def delete_${table.name}(record_id):
     if connection:
         try:
             cursor = connection.cursor()
-            id_column = next((col for col in ${JSON.stringify(allColumns)} if 'id' in col.lower()), '${allColumns[0]}')
-            query = f"DELETE FROM ${table.name} WHERE {id_column} = %s RETURNING *"
+            id_column = next((col for col in ${JSON.stringify(
+              allColumns
+            )} if 'id' in col.lower()), '${allColumns[0]}')
+            query = f"DELETE FROM ${
+              table.name
+            } WHERE {id_column} = %s RETURNING *"
             cursor.execute(query, (record_id,))
             result = cursor.fetchone()
             connection.commit()
             
             if result:
-                print(f"✅ Registro eliminado de ${table.name} con ID: {record_id}")
+                print(f"✅ Registro eliminado de ${
+                  table.name
+                } con ID: {record_id}")
                 return True
             else:
-                print(f"⚠️ No se encontró registro con ID {record_id} en ${table.name}")
+                print(f"⚠️ No se encontró registro con ID {record_id} en ${
+                  table.name
+                }")
                 return False
         except Exception as e:
             print(f"❌ Error eliminando de ${table.name}: {e}")
@@ -725,31 +803,47 @@ def test_database_operations():
     print("✅ Conexión a base de datos exitosa")
     print()
 
-${selectedTables.map(table => {
-    const insertColumns = table.columns.filter(col => 
-        !col.toLowerCase().includes('id') || 
-        (!col.toLowerCase().endsWith('_id') && col.toLowerCase() !== 'id')
+${selectedTables
+  .map((table) => {
+    const insertColumns = table.columns.filter(
+      (col) =>
+        !col.toLowerCase().includes("id") ||
+        (!col.toLowerCase().endsWith("_id") && col.toLowerCase() !== "id")
     );
-    
+
     // Generar valores de ejemplo basados en nombres de columnas
-    const generateExampleValue = (columnName) => {
-        const col = columnName.toLowerCase();
-        if (col.includes('nombre') || col.includes('name')) return "'Juan Pérez'";
-        if (col.includes('edad') || col.includes('age')) return "25";
-        if (col.includes('email') || col.includes('correo')) return "'juan@example.com'";
-        if (col.includes('activo') || col.includes('active')) return "True";
-        if (col.includes('fecha') || col.includes('date')) return "'2024-01-01'";
-        if (col.includes('precio') || col.includes('price')) return "99.99";
-        if (col.includes('telefono') || col.includes('phone')) return "'555-1234'";
-        // Valores por defecto según tipo probable
-        if (col.includes('texto') || col.includes('text') || col.includes('string')) return "'Ejemplo'";
-        if (col.includes('numero') || col.includes('num') || col.includes('int')) return "100";
-        if (col.includes('logico') || col.includes('bool')) return "True";
-        return "'Valor ejemplo'"; // Valor por defecto
+    interface GenerateExampleValue {
+      (columnName: string): string;
+    }
+
+    const generateExampleValue: GenerateExampleValue = (columnName) => {
+      const col = columnName.toLowerCase();
+      if (col.includes("nombre") || col.includes("name")) return "'Juan Pérez'";
+      if (col.includes("edad") || col.includes("age")) return "25";
+      if (col.includes("email") || col.includes("correo"))
+        return "'juan@example.com'";
+      if (col.includes("activo") || col.includes("active")) return "True";
+      if (col.includes("fecha") || col.includes("date")) return "'2024-01-01'";
+      if (col.includes("precio") || col.includes("price")) return "99.99";
+      if (col.includes("telefono") || col.includes("phone"))
+        return "'555-1234'";
+      // Valores por defecto según tipo probable
+      if (
+        col.includes("texto") ||
+        col.includes("text") ||
+        col.includes("string")
+      )
+        return "'Ejemplo'";
+      if (col.includes("numero") || col.includes("num") || col.includes("int"))
+        return "100";
+      if (col.includes("logico") || col.includes("bool")) return "True";
+      return "'Valor ejemplo'"; // Valor por defecto
     };
 
     const exampleValues = insertColumns.map(generateExampleValue);
-    const updateValues = insertColumns.filter(col => col !== 'id').map(generateExampleValue);
+    const updateValues = insertColumns
+      .filter((col) => col !== "id")
+      .map(generateExampleValue);
 
     return `    # === PRUEBAS PARA TABLA ${table.name.toUpperCase()} ===
     print(f"📋 Probando operaciones en tabla: ${table.name}")
@@ -761,7 +855,7 @@ ${selectedTables.map(table => {
     
     # 2. Insertar nuevo registro
     print("\\n2️⃣ Insertando nuevo registro...")
-    nuevo_registro = insert_${table.name}(${exampleValues.join(', ')})
+    nuevo_registro = insert_${table.name}(${exampleValues.join(", ")})
     
     if nuevo_registro:
         record_id = list(nuevo_registro.values())[0]  # Primer valor (usualmente el ID)
@@ -775,7 +869,9 @@ ${selectedTables.map(table => {
         
         # 4. Actualizar el registro
         print("\\n4️⃣ Actualizando registro...")
-        registro_actualizado = update_${table.name}(record_id, ${updateValues.join(', ')})
+        registro_actualizado = update_${
+          table.name
+        }(record_id, ${updateValues.join(", ")})
         
         # 5. Verificar actualización
         if registro_actualizado:
@@ -794,11 +890,14 @@ ${selectedTables.map(table => {
         
     print("-" * 50)
 `;
-}).join('\n')}
+  })
+  .join("\n")}
 
 if __name__ == "__main__":
     print("🐍 CÓDIGO PYTHON PARA OPERACIONES DE BASE DE DATOS")
-    print("📋 Tablas incluidas: ${selectedTables.map(t => t.name).join(', ')}")
+    print("📋 Tablas incluidas: ${selectedTables
+      .map((t) => t.name)
+      .join(", ")}")
     print()
     
     # Ejecutar las pruebas
@@ -887,6 +986,11 @@ if __name__ == "__main__":
                   createSQLCode={createSQLCode}
                   updateFileContent={updateFileContent}
                   loading={loading}
+                  sql={sql}
+                  createDatabase={createDatabase}
+                  creatingDatabase={creatingDatabase}
+                  createdDatabase={createdDatabase}
+                  extractDatabaseCommands={extractDatabaseCommands}
                 />
               ) : (
                 <WelcomeScreen addNewFile={addNewFile} />
@@ -1094,6 +1198,11 @@ interface EditorPanelProps {
   createSQLCode: () => void;
   updateFileContent: (id: number, content: string) => void;
   loading: boolean;
+  sql: string | null;
+  createDatabase: () => void;
+  creatingDatabase: boolean;
+  createdDatabase: string | null;
+  extractDatabaseCommands: (sql: string) => string | null;
 }
 
 const EditorPanel = ({
@@ -1102,6 +1211,11 @@ const EditorPanel = ({
   createSQLCode,
   updateFileContent,
   loading,
+  sql,
+  createDatabase,
+  creatingDatabase,
+  createdDatabase,
+  extractDatabaseCommands,
 }: EditorPanelProps) => {
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -1135,7 +1249,33 @@ const EditorPanel = ({
               </>
             )}
           </button>
+
+          {/* Nuevo botón para crear BD */}
+          <button
+            onClick={createDatabase}
+            disabled={!extractDatabaseCommands(sql || "") || creatingDatabase}
+            className="cursor-pointer group px-6 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-semibold transition-all duration-200 flex items-center space-x-2 shadow-md"
+          >
+            {creatingDatabase ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span>Creando BD...</span>
+              </>
+            ) : (
+              <>
+                <Database className="w-4 h-4" />
+                <span>Crear BD</span>
+              </>
+            )}
+          </button>
         </div>
+        {/* Indicador de BD creada */}
+        {createdDatabase && (
+          <div className="flex items-center space-x-2 text-sm">
+            <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
+            <span className="text-green-400">BD: {createdDatabase}</span>
+          </div>
+        )}
       </div>
     </div>
   );
