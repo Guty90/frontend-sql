@@ -593,330 +593,802 @@ fin`,
   };
 
   const generatePythonCode = async () => {
-    const selectedTables = tables.filter((table) => table.selected);
-    if (selectedTables.length === 0) return;
+  const selectedTables = tables.filter((table) => table.selected);
+  if (selectedTables.length === 0) return;
 
-    setGeneratingPython(true);
-    setSalida("Generando código Python...");
+  setGeneratingPython(true);
+  setSalida("Generando código Python...");
 
-    // Simular delay de generación
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+  // Simular delay de generación
+  await new Promise((resolve) => setTimeout(resolve, 1500));
 
-    // Usar la BD creada o una por defecto
-    const databaseName = createdDatabase || "test_db";
+  // Usar la BD creada o una por defecto
+  const databaseName = createdDatabase || "test_db";
 
-    let pythonCode = `import psycopg2
+  // Función para extraer columnas reales del SQL
+  interface ExtractedColumn {
+    name: string;
+  }
+
+  const extractTableColumns = (sqlCode: string, tableName: string): string[] => {
+    if (!sqlCode) return [];
+    
+    // Buscar la definición de la tabla en el SQL
+    const tableRegex = new RegExp(`CREATE TABLE\\s+${tableName}\\s*\\((.*?)\\);`, 'gis');
+    const match = tableRegex.exec(sqlCode);
+    
+    if (!match) return [];
+    
+    const columnsSection: string = match[1];
+    const lines: string[] = columnsSection.split(',').map(line => line.trim());
+    
+    const columns: string[] = [];
+    for (const line of lines) {
+      // Saltar líneas de constraints
+      if (line.toUpperCase().includes('CONSTRAINT') || 
+          line.toUpperCase().includes('FOREIGN KEY') ||
+          line.toUpperCase().includes('PRIMARY KEY') ||
+          line.toUpperCase().includes('UNIQUE')) {
+        continue;
+      }
+      
+      // Extraer nombre de columna (primera palabra)
+      const columnName: string = line.split(/\s+/)[0];
+      if (columnName && !columnName.includes('(')) {
+        columns.push(columnName);
+      }
+    }
+    
+    return columns;
+  };
+
+  // Obtener columnas reales del SQL para cada tabla
+  const tablesWithRealColumns = selectedTables.map(table => ({
+    ...table,
+    columns: extractTableColumns(sql ?? "", table.name)
+  }));
+
+  let pythonCode = `import tkinter as tk
+from tkinter import ttk, messagebox
+import psycopg2
 import pandas as pd
 from sqlalchemy import create_engine
+import sys
 
-# 🔧 Configuración de conexión a la base de datos
+# Configuración de conexión a la base de datos
 DATABASE_CONFIG = {
     'host': 'localhost',
     'database': '${databaseName}', 
     'user': 'postgres',     
-    'password': 'password', 
+    'password': 'Ruidios90', 
     'port': '5432'
 }
 
 def create_connection():
-    """🔗 Crear conexión a PostgreSQL"""
+    """Crear conexión a PostgreSQL"""
     try:
         connection = psycopg2.connect(**DATABASE_CONFIG)
         return connection
     except Exception as e:
-        print(f"❌ Error conectando: {e}")
+        print(f"Error conectando a la base de datos: {e}")
         return None
 
 def create_engine_connection():
-    """⚙️ Crear engine para pandas"""
+    """Crear engine para pandas"""
     connection_string = f"postgresql://{DATABASE_CONFIG['user']}:{DATABASE_CONFIG['password']}@{DATABASE_CONFIG['host']}:{DATABASE_CONFIG['port']}/{DATABASE_CONFIG['database']}"
     return create_engine(connection_string)
 
+def check_and_create_tables():
+    """Verificar y crear tablas - siempre intenta crear todas las tablas del esquema actual"""
+    connection = create_connection()
+    if not connection:
+        print("No se pudo conectar a la base de datos")
+        return False
+    
+    try:
+        cursor = connection.cursor()
+        
+        # SQL para crear las tablas seleccionadas usando el SQL original
+        tables_sql = """${sql ? sql.replace(/CREATE DATABASE[^;]*;/gi, '').replace(/USE [^;]*;/gi, '').trim() : ''}"""
+        
+        if tables_sql.strip():
+            # Ejecutar cada statement por separado
+            statements = [stmt.strip() for stmt in tables_sql.split(';') if stmt.strip()]
+            for statement in statements:
+                if statement.upper().startswith('CREATE TABLE'):
+                    try:
+                        # Extraer el nombre de la tabla
+                        table_name_match = statement.upper().split('CREATE TABLE')[1].split('(')[0].strip()
+                        
+                        cursor.execute(statement)
+                        print(f"Tabla creada: {table_name_match}")
+                    except psycopg2.errors.DuplicateTable:
+                        # Si la tabla ya existe, intentar actualizarla o recrearla
+                        table_name_match = statement.upper().split('CREATE TABLE')[1].split('(')[0].strip()
+                        print(f"Tabla ya existe: {table_name_match}")
+                        
+                        # Opcional: Aquí podrías agregar lógica para actualizar la estructura
+                        # Por ahora, simplemente continúa
+                        connection.rollback()
+                        
+                    except Exception as e:
+                        print(f"Error con tabla: {e}")
+                        connection.rollback()
+            
+            connection.commit()
+            print("Proceso de verificación/creación de tablas completado")
+            return True
+        else:
+            print("No hay SQL de tablas disponible")
+            return False
+        
+    except Exception as e:
+        connection.rollback()
+        error_msg = f"Error procesando tablas: {e}"
+        print(error_msg)
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+def table_exists(table_name):
+    """Verificar si una tabla existe"""
+    connection = create_connection()
+    if not connection:
+        return False
+    
+    try:
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_schema = 'public' 
+                AND table_name = %s
+            );
+        """, (table_name,))
+        
+        result = cursor.fetchone()
+        return result[0] if result else False
+        
+    except Exception as e:
+        print(f"Error verificando tabla {table_name}: {e}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+def get_table_columns(table_name):
+    """Obtener columnas de una tabla específica"""
+    connection = create_connection()
+    if not connection:
+        return []
+    
+    try:
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_schema = 'public' 
+            AND table_name = %s 
+            ORDER BY ordinal_position;
+        """, (table_name,))
+        
+        columns = [row[0] for row in cursor.fetchall()]
+        return columns
+        
+    except Exception as e:
+        print(f"Error obteniendo columnas de {table_name}: {e}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
 `;
 
-    selectedTables.forEach((table) => {
-      // Filtrar columnas (excluir ID autogenerados)
-      const insertColumns = table.columns.filter(
-        (col) =>
-          !col.toLowerCase().includes("id") ||
-          (!col.toLowerCase().endsWith("_id") && col.toLowerCase() !== "id")
-      );
+  // Generar funciones CRUD para cada tabla con columnas reales
+  tablesWithRealColumns.forEach((table) => {
+    if (table.columns.length === 0) return;
 
-      const allColumns = table.columns;
-      const placeholders = insertColumns.map(() => "%s").join(", ");
-      const updateColumns = insertColumns.filter((col) => col !== "id");
-      const updatePlaceholders = updateColumns
-        .map((col) => `${col} = %s`)
-        .join(", ");
+    // Filtrar columnas para inserción (excluir IDs autogenerados)
+    const insertColumns = table.columns.filter(
+      (col) => !col.toLowerCase().match(/^id$/) || 
+      col.toLowerCase().includes('user_id') || 
+      col.toLowerCase().includes('cliente_id')
+    );
 
-      pythonCode += `
-# 📊 Funciones para la tabla ${table.name}
+    const allColumns = table.columns;
+    const placeholders = insertColumns.map(() => "%s").join(", ");
+    const updateColumns = insertColumns.filter((col) => !col.toLowerCase().match(/^id$/));
+    const updatePlaceholders = updateColumns.map((col) => `${col} = %s`).join(", ");
+
+    pythonCode += `
+# Funciones para la tabla ${table.name}
 def get_all_${table.name}():
     """Obtiene todos los registros de ${table.name}"""
     try:
+        if not table_exists("${table.name}"):
+            print(f"Tabla '${table.name}' no existe")
+            return pd.DataFrame()
+            
         engine = create_engine_connection()
-        query = "SELECT * FROM ${table.name}"
+        query = "SELECT * FROM ${table.name} ORDER BY 1"
         df = pd.read_sql(query, engine)
-        print(f"✅ Se obtuvieron {len(df)} registros de ${table.name}")
         return df
     except Exception as e:
-        print(f"❌ Error obteniendo datos de ${table.name}: {e}")
+        print(f"Error obteniendo datos de ${table.name}: {e}")
         return pd.DataFrame()
 
 def get_${table.name}_by_id(record_id):
     """Obtiene un registro específico de ${table.name} por ID"""
     connection = create_connection()
-    if connection:
-        try:
-            cursor = connection.cursor()
-            # Buscar cualquier columna que termine en 'id'
-            id_column = next((col for col in ${JSON.stringify(
-              allColumns
-            )} if 'id' in col.lower()), '${allColumns[0]}')
-            query = f"SELECT * FROM ${table.name} WHERE {id_column} = %s"
-            cursor.execute(query, (record_id,))
-            result = cursor.fetchone()
-            if result:
-                columns = [desc[0] for desc in cursor.description]
-                return dict(zip(columns, result))
+    if not connection:
+        return None
+        
+    try:
+        cursor = connection.cursor()
+        # Obtener columnas dinámicamente
+        columns = get_table_columns("${table.name}")
+        if not columns:
             return None
-        except Exception as e:
-            print(f"❌ Error obteniendo registro: {e}")
-            return None
-        finally:
-            cursor.close()
-            connection.close()
-
-def insert_${table.name}(${insertColumns.join(", ")}):
-    """➕ Inserta un nuevo registro en ${table.name}"""
-    connection = create_connection()
-    if connection:
-        try:
-            cursor = connection.cursor()
-            query = """INSERT INTO ${table.name} (${insertColumns.join(", ")})
-                       VALUES (${placeholders}) RETURNING *"""
-            cursor.execute(query, (${insertColumns.join(", ")}))
-            result = cursor.fetchone()
-            connection.commit()
             
-            if result:
-                columns = [desc[0] for desc in cursor.description]
-                record = dict(zip(columns, result))
-                print(f"✅ Registro insertado en ${table.name}: {record}")
-                return record
-            return None
-        except Exception as e:
-            print(f"❌ Error insertando en ${table.name}: {e}")
-            connection.rollback()
-            return None
-        finally:
-            cursor.close()
-            connection.close()
+        # Usar la primera columna como ID (generalmente es el ID primario)
+        id_column = columns[0]
+        query = f"SELECT * FROM ${table.name} WHERE {id_column} = %s"
+        cursor.execute(query, (record_id,))
+        result = cursor.fetchone()
+        
+        if result:
+            column_names = [desc[0] for desc in cursor.description]
+            return dict(zip(column_names, result))
+        return None
+    except Exception as e:
+        print(f"Error obteniendo registro de ${table.name}: {e}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
 
-def update_${table.name}(record_id, ${updateColumns.join(", ")}):
-    """🔄 Actualiza un registro en ${table.name}"""
-    connection = create_connection()
-    if connection:
-        try:
-            cursor = connection.cursor()
-            # Buscar la columna ID
-            id_column = next((col for col in ${JSON.stringify(
-              allColumns
-            )} if 'id' in col.lower()), '${allColumns[0]}')
-            query = f"""UPDATE ${table.name} 
-                       SET ${updatePlaceholders}
-                       WHERE {id_column} = %s 
-                       RETURNING *"""
-            cursor.execute(query, (${updateColumns.join(", ")}, record_id))
-            result = cursor.fetchone()
-            connection.commit()
-            
-            if result:
-                columns = [desc[0] for desc in cursor.description]
-                record = dict(zip(columns, result))
-                print(f"✅ Registro actualizado en ${table.name}: {record}")
-                return record
-            else:
-                print(f"⚠️ No se encontró registro con ID {record_id} en ${
-                  table.name
-                }")
-                return None
-        except Exception as e:
-            print(f"❌ Error actualizando ${table.name}: {e}")
-            connection.rollback()
-            return None
-        finally:
-            cursor.close()
-            connection.close()
-
-def delete_${table.name}(record_id):
-    """🗑️ Elimina un registro de ${table.name}"""
-    connection = create_connection()
-    if connection:
-        try:
-            cursor = connection.cursor()
-            id_column = next((col for col in ${JSON.stringify(
-              allColumns
-            )} if 'id' in col.lower()), '${allColumns[0]}')
-            query = f"DELETE FROM ${
-              table.name
-            } WHERE {id_column} = %s RETURNING *"
-            cursor.execute(query, (record_id,))
-            result = cursor.fetchone()
-            connection.commit()
-            
-            if result:
-                print(f"✅ Registro eliminado de ${
-                  table.name
-                } con ID: {record_id}")
-                return True
-            else:
-                print(f"⚠️ No se encontró registro con ID {record_id} en ${
-                  table.name
-                }")
-                return False
-        except Exception as e:
-            print(f"❌ Error eliminando de ${table.name}: {e}")
-            connection.rollback()
-            return False
-        finally:
-            cursor.close()
-            connection.close()
-`;
-    });
-
-    // Generar ejemplos de uso más robustos
-    pythonCode += `
-# 🚀 Ejemplos de uso y pruebas
-def test_database_operations():
-    """🧪 Función de prueba para validar todas las operaciones"""
-    print("=" * 60)
-    print("🧪 INICIANDO PRUEBAS DE BASE DE DATOS")
-    print("=" * 60)
-    
-    # Verificar conexión
+def insert_${table.name}(**kwargs):
+    """Inserta un nuevo registro en ${table.name}"""
     connection = create_connection()
     if not connection:
-        print("❌ No se pudo conectar a la base de datos")
-        return
-    connection.close()
-    print("✅ Conexión a base de datos exitosa")
-    print()
+        return None
+        
+    try:
+        cursor = connection.cursor()
+        
+        # Filtrar solo las columnas que tienen valores
+        columns = [k for k, v in kwargs.items() if v is not None and str(v).strip() != '']
+        values = [kwargs[k] for k in columns]
+        
+        if not columns:
+            print("No hay datos para insertar")
+            return None
+            
+        placeholders = ', '.join(['%s'] * len(values))
+        columns_str = ', '.join(columns)
+        
+        query = f"INSERT INTO ${table.name} ({columns_str}) VALUES ({placeholders}) RETURNING *"
+        cursor.execute(query, values)
+        result = cursor.fetchone()
+        connection.commit()
+        
+        if result:
+            column_names = [desc[0] for desc in cursor.description]
+            record = dict(zip(column_names, result))
+            print(f"Registro insertado en ${table.name}")
+            return record
+        return None
+    except Exception as e:
+        print(f"Error insertando en ${table.name}: {e}")
+        connection.rollback()
+        return None
+    finally:
+        cursor.close()
+        connection.close()
 
-${selectedTables
-  .map((table) => {
-    const insertColumns = table.columns.filter(
-      (col) =>
-        !col.toLowerCase().includes("id") ||
-        (!col.toLowerCase().endsWith("_id") && col.toLowerCase() !== "id")
-    );
+def update_${table.name}(record_id, **kwargs):
+    """Actualiza un registro en ${table.name}"""
+    connection = create_connection()
+    if not connection:
+        return None
+        
+    try:
+        cursor = connection.cursor()
+        
+        # Obtener columnas dinámicamente
+        table_columns = get_table_columns("${table.name}")
+        if not table_columns:
+            return None
+            
+        # Usar la primera columna como ID
+        id_column = table_columns[0]
+        
+        # Filtrar solo las columnas que tienen valores y no son ID
+        update_data = {k: v for k, v in kwargs.items() 
+                      if v is not None and str(v).strip() != '' and k.lower() != id_column.lower()}
+        
+        if not update_data:
+            print("No hay datos para actualizar")
+            return None
+            
+        set_clause = ', '.join([f"{k} = %s" for k in update_data.keys()])
+        values = list(update_data.values()) + [record_id]
+        
+        query = f"UPDATE ${table.name} SET {set_clause} WHERE {id_column} = %s RETURNING *"
+        cursor.execute(query, values)
+        result = cursor.fetchone()
+        connection.commit()
+        
+        if result:
+            column_names = [desc[0] for desc in cursor.description]
+            record = dict(zip(column_names, result))
+            print(f"Registro actualizado en ${table.name}")
+            return record
+        else:
+            print(f"No se encontró registro con ID {record_id}")
+            return None
+    except Exception as e:
+        print(f"Error actualizando ${table.name}: {e}")
+        connection.rollback()
+        return None
+    finally:
+        cursor.close()
+        connection.close()
 
-    // Generar valores de ejemplo basados en nombres de columnas
-    interface GenerateExampleValue {
-      (columnName: string): string;
-    }
-
-    const generateExampleValue: GenerateExampleValue = (columnName) => {
-      const col = columnName.toLowerCase();
-      if (col.includes("nombre") || col.includes("name")) return "'Juan Pérez'";
-      if (col.includes("edad") || col.includes("age")) return "25";
-      if (col.includes("email") || col.includes("correo"))
-        return "'juan@example.com'";
-      if (col.includes("activo") || col.includes("active")) return "True";
-      if (col.includes("fecha") || col.includes("date")) return "'2024-01-01'";
-      if (col.includes("precio") || col.includes("price")) return "99.99";
-      if (col.includes("telefono") || col.includes("phone"))
-        return "'555-1234'";
-      // Valores por defecto según tipo probable
-      if (
-        col.includes("texto") ||
-        col.includes("text") ||
-        col.includes("string")
-      )
-        return "'Ejemplo'";
-      if (col.includes("numero") || col.includes("num") || col.includes("int"))
-        return "100";
-      if (col.includes("logico") || col.includes("bool")) return "True";
-      return "'Valor ejemplo'"; // Valor por defecto
-    };
-
-    const exampleValues = insertColumns.map(generateExampleValue);
-    const updateValues = insertColumns
-      .filter((col) => col !== "id")
-      .map(generateExampleValue);
-
-    return `    # === PRUEBAS PARA TABLA ${table.name.toUpperCase()} ===
-    print(f"📋 Probando operaciones en tabla: ${table.name}")
-    
-    # 1. Obtener todos los registros iniciales
-    print("\\n1️⃣ Obteniendo todos los registros...")
-    df_inicial = get_all_${table.name}()
-    print(f"Registros iniciales: {len(df_inicial) if not df_inicial.empty else 0}")
-    
-    # 2. Insertar nuevo registro
-    print("\\n2️⃣ Insertando nuevo registro...")
-    nuevo_registro = insert_${table.name}(${exampleValues.join(", ")})
-    
-    if nuevo_registro:
-        record_id = list(nuevo_registro.values())[0]  # Primer valor (usualmente el ID)
-        print(f"✅ Registro creado con ID: {record_id}")
+def delete_${table.name}(record_id):
+    """Elimina un registro de ${table.name}"""
+    connection = create_connection()
+    if not connection:
+        return False
         
-        # 3. Obtener el registro específico
-        print("\\n3️⃣ Obteniendo registro específico...")
-        registro_obtenido = get_${table.name}_by_id(record_id)
-        if registro_obtenido:
-            print(f"✅ Registro encontrado: {registro_obtenido}")
+    try:
+        cursor = connection.cursor()
         
-        # 4. Actualizar el registro
-        print("\\n4️⃣ Actualizando registro...")
-        registro_actualizado = update_${
-          table.name
-        }(record_id, ${updateValues.join(", ")})
+        # Obtener columnas dinámicamente
+        table_columns = get_table_columns("${table.name}")
+        if not table_columns:
+            return False
+            
+        # Usar la primera columna como ID
+        id_column = table_columns[0]
         
-        # 5. Verificar actualización
-        if registro_actualizado:
-            print("\\n5️⃣ Verificando actualización...")
-            registro_verificado = get_${table.name}_by_id(record_id)
-            print(f"✅ Registro después de actualizar: {registro_verificado}")
+        query = f"DELETE FROM ${table.name} WHERE {id_column} = %s RETURNING *"
+        cursor.execute(query, (record_id,))
+        result = cursor.fetchone()
+        connection.commit()
         
-        # 6. Obtener todos los registros finales
-        print("\\n6️⃣ Obteniendo todos los registros finales...")
-        df_final = get_all_${table.name}()
-        print(f"Registros finales: {len(df_final) if not df_final.empty else 0}")
-        
-        # Opcional: Eliminar el registro de prueba (descomenta si quieres)
-        # print("\\n7️⃣ Eliminando registro de prueba...")
-        # delete_${table.name}(record_id)
-        
-    print("-" * 50)
+        if result:
+            print(f"Registro eliminado de ${table.name}")
+            return True
+        else:
+            print(f"No se encontró registro con ID {record_id}")
+            return False
+    except Exception as e:
+        print(f"Error eliminando de ${table.name}: {e}")
+        connection.rollback()
+        return False
+    finally:
+        cursor.close()
+        connection.close()
 `;
-  })
-  .join("\n")}
+  });
+
+  // Generar la interfaz gráfica
+  pythonCode += `
+class DatabaseGUI:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("GutYisuSQL - Gestor de Base de Datos")
+        self.root.geometry("1200x800")
+        self.root.configure(bg='#2d3748')
+        
+        self.current_table = None
+        self.current_records = []
+        self.entry_widgets = {}
+        self.selected_record_id = None
+        
+        # Verificar/crear tablas al inicializar
+        self.initialize_database()
+        
+        self.setup_ui()
+        
+    def initialize_database(self):
+        """Inicializar base de datos y crear tablas si es necesario"""
+        try:
+            print("Inicializando base de datos...")
+            success = check_and_create_tables()
+            if success:
+                print("Base de datos lista para usar")
+            else:
+                print("Algunas tablas podrían no estar disponibles")
+        except Exception as e:
+            print(f"Error inicializando base de datos: {e}")
+        
+    def setup_ui(self):
+        # Frame principal
+        main_frame = ttk.Frame(self.root)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Título con indicador de estado
+        title_frame = ttk.Frame(main_frame)
+        title_frame.pack(fill=tk.X, pady=10)
+        
+        title_label = tk.Label(title_frame, text="Gestor de Base de Datos", 
+                              font=("Arial", 16, "bold"), bg='#2d3748', fg='white')
+        title_label.pack(side=tk.LEFT)
+        
+        # Botón para recrear tablas
+        recreate_btn = ttk.Button(title_frame, text="Recrear Tablas", 
+                                 command=self.recreate_tables)
+        recreate_btn.pack(side=tk.RIGHT)
+        
+        # Frame superior para selección de tabla
+        table_frame = ttk.LabelFrame(main_frame, text="Seleccionar Tabla", padding=10)
+        table_frame.pack(fill=tk.X, pady=5)
+        
+        self.table_var = tk.StringVar()
+        self.table_combo = ttk.Combobox(table_frame, textvariable=self.table_var, 
+                                       values=[${tablesWithRealColumns.map((t) => `"${t.name}"`).join(", ")}], 
+                                       state="readonly", font=("Arial", 12))
+        self.table_combo.pack(side=tk.LEFT, padx=5)
+        self.table_combo.bind("<<ComboboxSelected>>", self.on_table_select)
+        
+        ttk.Button(table_frame, text="Refrescar", 
+                  command=self.refresh_data).pack(side=tk.LEFT, padx=5)
+        
+        # Frame central dividido
+        content_frame = ttk.Frame(main_frame)
+        content_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        
+        # Frame izquierdo - Lista de registros
+        left_frame = ttk.LabelFrame(content_frame, text="Registros", padding=10)
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
+        
+        # Treeview para mostrar registros
+        self.tree = ttk.Treeview(left_frame, show="tree headings", height=15)
+        
+        # Scrollbar para el treeview
+        scrollbar = ttk.Scrollbar(left_frame, orient=tk.VERTICAL, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Evento de selección en el treeview
+        self.tree.bind("<<TreeviewSelect>>", self.on_record_select)
+        
+        # Frame derecho - Formulario
+        right_frame = ttk.LabelFrame(content_frame, text="Formulario", padding=10)
+        right_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(5, 0))
+        
+        # Frame para campos del formulario
+        self.form_frame = ttk.Frame(right_frame)
+        self.form_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Label para mostrar ID seleccionado
+        self.id_label = tk.Label(right_frame, text="ID: No seleccionado", 
+                                font=("Arial", 9), bg='#2d3748', fg='yellow')
+        self.id_label.pack(fill=tk.X, pady=(0, 10))
+        
+        # Botones de acción
+        button_frame = ttk.Frame(right_frame)
+        button_frame.pack(fill=tk.X, pady=10)
+        
+        ttk.Button(button_frame, text="Insertar", 
+                  command=self.insert_record, style="Accent.TButton").pack(fill=tk.X, pady=2)
+        ttk.Button(button_frame, text="Actualizar", 
+                  command=self.update_record).pack(fill=tk.X, pady=2)
+        ttk.Button(button_frame, text="Eliminar", 
+                  command=self.delete_record).pack(fill=tk.X, pady=2)
+        ttk.Button(button_frame, text="Limpiar", 
+                  command=self.clear_form).pack(fill=tk.X, pady=2)
+        
+        # Configurar estilo
+        style = ttk.Style()
+        style.configure("Accent.TButton", font=("Arial", 10, "bold"))
+        
+    def recreate_tables(self):
+        """Recrear todas las tablas manualmente"""
+        try:
+            print("Recreando tablas...")
+            success = check_and_create_tables()
+            if success:
+                messagebox.showinfo("Éxito", "Tablas verificadas/recreadas correctamente")
+                self.refresh_data()
+            else:
+                messagebox.showwarning("Advertencia", "Hubo algunos problemas al recrear las tablas")
+        except Exception as e:
+            messagebox.showerror("Error", f"Error recreando tablas: {e}")
+            
+    def on_table_select(self, event=None):
+        table_name = self.table_var.get()
+        if table_name:
+            self.current_table = table_name
+            print(f"Tabla seleccionada: {table_name}")
+            self.setup_form()
+            self.refresh_data()
+            
+    def setup_form(self):
+        # Limpiar formulario anterior
+        for widget in self.form_frame.winfo_children():
+            widget.destroy()
+        self.entry_widgets.clear()
+        self.selected_record_id = None
+        self.id_label.config(text="ID: No seleccionado")
+        
+        if not self.current_table:
+            return
+            
+        # Obtener columnas reales de la base de datos
+        columns = get_table_columns(self.current_table)
+        print(f"Columnas para {self.current_table}: {columns}")
+        
+        # Crear campos del formulario
+        for column in columns:
+            frame = ttk.Frame(self.form_frame)
+            frame.pack(fill=tk.X, pady=5)
+            
+            label = ttk.Label(frame, text=f"{column}:", width=15)
+            label.pack(side=tk.LEFT)
+            
+            entry = ttk.Entry(frame, font=("Arial", 10))
+            entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 0))
+            
+            # Si es un campo ID, hacerlo readonly
+            if column.lower().endswith('id') or column.lower() == 'id':
+                entry.configure(state='readonly')
+            
+            self.entry_widgets[column] = entry
+            
+    def refresh_data(self):
+        if not self.current_table:
+            return
+            
+        print(f"Actualizando datos de {self.current_table}")
+        
+        # Limpiar treeview
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+            
+        # Limpiar columnas anteriores
+        self.tree["columns"] = ()
+        self.tree["show"] = "headings"
+            
+        try:
+            # Obtener datos usando la función correspondiente
+            df = None
+            ${tablesWithRealColumns.map((table, index) => 
+                `${index === 0 ? 'if' : 'elif'} self.current_table == "${table.name}":
+                df = get_all_${table.name}()`
+            ).join('\n            ')}
+            
+            if df is not None and not df.empty:
+                # Configurar columnas del treeview
+                columns = list(df.columns)
+                self.tree["columns"] = columns
+                
+                # Configurar encabezados
+                for col in columns:
+                    self.tree.heading(col, text=col)
+                    self.tree.column(col, width=120, anchor="w")
+                
+                # Insertar datos
+                self.current_records = df.to_dict('records')
+                print(f"Se encontraron {len(self.current_records)} registros")
+                
+                for i, record in enumerate(self.current_records):
+                    values = [str(record.get(col, '')) for col in columns]
+                    self.tree.insert("", tk.END, iid=i, values=values)
+            else:
+                self.current_records = []
+                print(f"No se encontraron registros en {self.current_table}")
+                
+        except Exception as e:
+            print(f"Error cargando datos de {self.current_table}: {e}")
+            messagebox.showerror("Error", f"Error cargando datos: {e}")
+            
+    def on_record_select(self, event=None):
+        selection = self.tree.selection()
+        if selection:
+            try:
+                item_id = int(selection[0])
+                record = self.current_records[item_id]
+                print(f"Registro seleccionado: {record}")
+                
+                # Obtener columnas de la tabla
+                columns = get_table_columns(self.current_table)
+                if columns:
+                    # El ID generalmente es la primera columna
+                    id_column = columns[0]
+                    self.selected_record_id = record.get(id_column)
+                    self.id_label.config(text=f"ID: {self.selected_record_id}")
+                
+                # Llenar formulario con los datos del registro seleccionado
+                for column, entry in self.entry_widgets.items():
+                    if column in record:
+                        # Habilitar temporalmente los campos readonly para llenarlos
+                        if entry['state'] == 'readonly':
+                            entry.configure(state='normal')
+                            entry.delete(0, tk.END)
+                            entry.insert(0, str(record[column]) if record[column] is not None else "")
+                            entry.configure(state='readonly')
+                        else:
+                            entry.delete(0, tk.END)
+                            entry.insert(0, str(record[column]) if record[column] is not None else "")
+            except (ValueError, IndexError) as e:
+                print(f"Error seleccionando registro: {e}")
+                    
+    def get_form_data(self):
+        """Obtiene los datos del formulario"""
+        data = {}
+        for column, entry in self.entry_widgets.items():
+            # Saltar campos readonly (como IDs)
+            if entry['state'] == 'readonly':
+                continue
+                
+            value = entry.get().strip()
+            if value:
+                # Intentar convertir a número si es posible
+                try:
+                    if '.' in value:
+                        data[column] = float(value)
+                    else:
+                        data[column] = int(value)
+                except ValueError:
+                    # Si no es número, mantener como string
+                    if value.lower() in ['true', 'false']:
+                        data[column] = value.lower() == 'true'
+                    else:
+                        data[column] = value
+            else:
+                data[column] = None
+        return data
+        
+    def insert_record(self):
+        if not self.current_table:
+            messagebox.showwarning("Advertencia", "Selecciona una tabla primero")
+            return
+            
+        data = self.get_form_data()
+        
+        if not any(v is not None and str(v).strip() != '' for v in data.values()):
+            messagebox.showwarning("Advertencia", "Llena al menos un campo")
+            return
+            
+        try:
+            print(f"Insertando en {self.current_table}: {data}")
+            result = None
+            ${tablesWithRealColumns.map((table, index) => 
+                `${index === 0 ? 'if' : 'elif'} self.current_table == "${table.name}":
+                result = insert_${table.name}(**data)`
+            ).join('\n            ')}
+            
+            if result:
+                messagebox.showinfo("Éxito", f"Registro insertado correctamente en {self.current_table}")
+                self.refresh_data()
+                self.clear_form()
+            else:
+                messagebox.showerror("Error", "No se pudo insertar el registro")
+                
+        except Exception as e:
+            print(f"Error insertando registro: {e}")
+            messagebox.showerror("Error", f"Error insertando registro: {e}")
+            
+    def update_record(self):
+        if not self.selected_record_id:
+            messagebox.showwarning("Advertencia", "Selecciona un registro para actualizar")
+            return
+            
+        data = self.get_form_data()
+        
+        if not any(v is not None and str(v).strip() != '' for v in data.values()):
+            messagebox.showwarning("Advertencia", "Llena al menos un campo para actualizar")
+            return
+                
+        try:
+            print(f"Actualizando registro ID {self.selected_record_id} en {self.current_table}: {data}")
+            result = None
+            ${tablesWithRealColumns.map((table, index) => 
+                `${index === 0 ? 'if' : 'elif'} self.current_table == "${table.name}":
+                result = update_${table.name}(self.selected_record_id, **data)`
+            ).join('\n            ')}
+            
+            if result:
+                messagebox.showinfo("Éxito", f"Registro actualizado correctamente en {self.current_table}")
+                self.refresh_data()
+                self.clear_form()
+            else:
+                messagebox.showwarning("Advertencia", "No se pudo actualizar el registro")
+                
+        except Exception as e:
+            print(f"Error actualizando registro: {e}")
+            messagebox.showerror("Error", f"Error actualizando registro: {e}")
+            
+    def delete_record(self):
+        if not self.selected_record_id:
+            messagebox.showwarning("Advertencia", "Selecciona un registro para eliminar")
+            return
+            
+        if not messagebox.askyesno("Confirmar", "¿Estás seguro de eliminar este registro?"):
+            return
+            
+        try:
+            print(f"Eliminando registro ID {self.selected_record_id} de {self.current_table}")
+            result = False
+            ${tablesWithRealColumns.map((table, index) => 
+                `${index === 0 ? 'if' : 'elif'} self.current_table == "${table.name}":
+                result = delete_${table.name}(self.selected_record_id)`
+            ).join('\n            ')}
+            
+            if result:
+                messagebox.showinfo("Éxito", f"Registro eliminado correctamente de {self.current_table}")
+                self.refresh_data()
+                self.clear_form()
+            else:
+                messagebox.showwarning("Advertencia", "No se pudo eliminar el registro")
+                
+        except Exception as e:
+            print(f"Error eliminando registro: {e}")
+            messagebox.showerror("Error", f"Error eliminando registro: {e}")
+            
+    def clear_form(self):
+        """Limpia todos los campos del formulario"""
+        for column, entry in self.entry_widgets.items():
+            if entry['state'] != 'readonly':
+                entry.delete(0, tk.END)
+        
+        self.selected_record_id = None
+        self.id_label.config(text="ID: No seleccionado")
+
+def main():
+    """Funcion principal para ejecutar la aplicación"""
+    print("INTERFAZ GRAFICA PARA BASE DE DATOS")
+    print("=" * 50)
+    print(f"Tablas incluidas: ${tablesWithRealColumns.map((t) => t.name).join(", ")}")
+    print(f"Base de datos: {DATABASE_CONFIG['database']}")
+    print("=" * 50)
+    
+    # Verificar conexión inicial
+    connection = create_connection()
+    if not connection:
+        print("ERROR: No se pudo conectar a la base de datos.")
+        print("Verifica la configuración en DATABASE_CONFIG")
+        input("Presiona Enter para continuar de todos modos...")
+    else:
+        print("Conexion a base de datos exitosa")
+        connection.close()
+    
+    try:
+        root = tk.Tk()
+        app = DatabaseGUI(root)
+        
+        # Configurar el cierre de la aplicación
+        def on_closing():
+            if messagebox.askokcancel("Salir", "¿Quieres cerrar la aplicación?"):
+                root.destroy()
+        
+        root.protocol("WM_DELETE_WINDOW", on_closing)
+        
+        # Iniciar la aplicación
+        print("Iniciando interfaz gráfica...")
+        root.mainloop()
+        
+    except Exception as e:
+        print(f"Error iniciando la aplicación: {e}")
+        messagebox.showerror("Error Fatal", f"No se pudo iniciar la aplicación: {e}")
+    
+    print("Aplicación cerrada.")
 
 if __name__ == "__main__":
-    print("🐍 CÓDIGO PYTHON PARA OPERACIONES DE BASE DE DATOS")
-    print("📋 Tablas incluidas: ${selectedTables
-      .map((t) => t.name)
-      .join(", ")}")
-    print()
-    
-    # Ejecutar las pruebas
-    test_database_operations()
-    
-    print("\\n" + "=" * 60)
-    print("✅ PRUEBAS COMPLETADAS")
-    print("💡 Para usar en producción:")
-    print("   1. Actualiza DATABASE_CONFIG con tus credenciales")
-    print("   2. Asegúrate de que las tablas existan en tu BD")
-    print("   3. Instala las dependencias: pip install psycopg2 pandas sqlalchemy")
-    print("=" * 60)
+    main()
 `;
 
-    setPythonCode(pythonCode);
-    setSalida("🐍 Código Python funcional generado exitosamente");
-    setIsError(false);
-    setGeneratingPython(false);
-  };
+  setPythonCode(pythonCode);
+  setSalida("🐍 Interfaz gráfica Python corregida - ahora NO se cierra después de crear tablas");
+  setIsError(false);
+  setGeneratingPython(false);
+};
 
   // 3. Agregar función para seleccionar/deseleccionar todas las tablas
   const toggleAllTables = () => {
